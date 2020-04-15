@@ -416,6 +416,78 @@ IMPORTANT: Changes required before upgrading to 1.7.0
 New ConfigMap Options
 ~~~~~~~~~~~~~~~~~~~~~
 
+  * ``enable-remote-node-identity`` has been added to enable a new identity
+    for remote cluster nodes. This allows for network policies that distinguish
+    between connections from host networking pods or other processes on the local
+    Kubernetes worker node from those on remote worker nodes.  This is important
+    because Kubernetes Network Policy dictates that network connectivity from the
+    local host must always be allowed, even for pods that have a default deny rule for
+    ingress connectivity.   This is so that network liveness and readiness
+    probes from kubelet will not be dropped by network policy.  Prior to 1.7.x,
+    Cilium achieved this by always allowing ingress host network connectivity from any
+    host in the cluster.  With 1.7 and ``enable-remote-node-identity=true``, Cilium
+    will only automatically allow connectivity from the local node, thereby providing
+    a better default security posture.
+
+    The option is enabled by default for new deployments when generated via
+    Helm, in order to gain the benefits of improved security. The Helm option
+    is ``--set global.remoteNodeIdentity``. This option can be disabled in
+    order to maintain full compatibility with Cilium 1.6.x policy enforcement.
+    **Be aware** that upgrading a cluster to 1.7.x by using helm to generate a
+    new Cilium config that leaves ``enable-remote-node-identity`` set as the
+    default value of ``true`` **can break network connectivity.**
+
+    The reason for this is that
+    with Cilium 1.6.x, the source identity of ANY connection from a host-networking pod or from
+    other processes on a Kubernetes worker node would be the  ``host`` identity.   Thus, a
+    Cilium 1.6.x or earlier environment with network policy enforced may be implicitly
+    relying on the ``allow everything from host identity`` behavior to
+    whitelist traffic from host networking to other Cilium-managed pods.
+    With the shift to 1.7.x, if ``enable-remote-node-identity=true``
+    these connections will be denied by policy if they are coming from
+    a host-networking pod or process on another Kubernetes worker node, since the source
+    will be given the ``remote-node`` identity (which is not automatically
+    allowed) rather than the ``host`` identity (which is automatically allowed).
+
+    An indicator that this is happening would be drops visible in Hubble or
+    Cilium monitor with a source identity equal to 6 (the numeric value for the
+    new ``remote-node`` identity.   For example:
+
+    ::
+
+       xx drop (Policy denied) flow 0x6d7b6dd0 to endpoint 1657, identity 6->51566: 172.16.9.243:47278 -> 172.16.8.21:9093 tcp SYN
+
+    There are two ways to address this.  One can set
+    ``enable-remote-node-identity=false`` in the `ConfigMap` to retain the
+    Cilium 1.6.x behavior.  However, this is not ideal, as it means there is no
+    way to prevent communication between host-networking pods and
+    Cilium-managed pods, since all such connectivity is allowed automatically
+    because it is from the ``host`` identity.
+
+    The other option is to keep ``enable-remote-node-identity=true`` and
+    create policy rules that explicitly whitelist connections between
+    the ``remote-host`` identity and pods that should be reachable from host-networking pods
+    or other processes that may be running on a remote Kubernetes worker node.   An example of
+    such a rule is:
+
+
+    ::
+
+       apiVersion: "cilium.io/v2"
+       kind: CiliumNetworkPolicy
+       metadata:
+         name: "allow-from-remote-nodes"
+       spec:
+         endpointSelector:
+           matchLabels:
+             app: myapp
+         ingress:
+         - fromEntities:
+           - remote-node
+
+    See :ref:`policy-remote-node` for more examples of remote-node policies.
+
+
   * ``enable-well-known-identities`` has been added to control the
     initialization of the well-known identities. Well-known identities have
     initially been added to support the managed etcd concept to allow the etcd
