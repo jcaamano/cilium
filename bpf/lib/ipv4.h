@@ -134,4 +134,22 @@ ipv4_handle_fragment(struct __ctx_buff *ctx,
 }
 #endif
 
+static __always_inline int fib_lookup_ipv4(struct iphdr *ip4 __maybe_unused)
+{
+#ifdef BPF_HAVE_FIB_LOOKUP
+	struct bpf_fib_lookup fib_params = {};
+	int err;
+
+        fib_params.family = AF_INET;
+        fib_params.ipv4_src = ip4->saddr;
+        fib_params.ipv4_dst = ip4->daddr;
+
+	err = fib_lookup(ctx, &fib_params, sizeof(fib_params),
+		    BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_OUTPUT);
+        if (!err)
+                return fib_params.ifindex
+#endif
+        return -1;
+}
+
 #endif /* __LIB_IPV4__ */

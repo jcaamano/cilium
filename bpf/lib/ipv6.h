@@ -254,4 +254,23 @@ static __always_inline int ipv6_addr_is_mapped(union v6addr *addr)
 {
 	return addr->p1 == 0 && addr->p2 == 0 && addr->p3 == 0xFFFF0000;
 }
+
+static __always_inline int fib_lookup_ipv6(struct ipv6hdr *ip6 __maybe_unused)
+{
+#ifdef BPF_HAVE_FIB_LOOKUP
+	struct bpf_fib_lookup fib_params = {};
+	int err;
+
+        fib_params.family = AF_INET6;
+        ipv6_addr_copy((union v6addr *) &fib_params.ipv6_src, (union v6addr *) &ip6->saddr);
+        ipv6_addr_copy((union v6addr *) &fib_params.ipv6_dst, (union v6addr *) &ip6->daddr);
+
+	err = fib_lookup(ctx, &fib_params, sizeof(fib_params),
+		    BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_OUTPUT);
+        if (!err)
+                return fib_params.ifindex;
+#endif
+        return -1;
+}
+
 #endif /* __LIB_IPV6__ */

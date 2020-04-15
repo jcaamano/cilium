@@ -58,7 +58,7 @@ static __always_inline int ipv6_l3_from_lxc(struct __ctx_buff *ctx,
 #ifdef ENABLE_ROUTING
 	union macaddr router_mac = NODE_MAC;
 #endif
-	int ret, verdict, l4_off, hdrlen;
+	int ret, verdict, l4_off, hdrlen, ifindex;
 	struct csum_offset csum_off = {};
 	struct ct_state ct_state_new = {};
 	struct ct_state ct_state = {};
@@ -365,6 +365,10 @@ pass_to_stack:
 	ctx->mark |= MARK_MAGIC_IDENTITY;
 	set_identity_mark(ctx, SECLABEL);
 
+	ifindex = fib_lookup_ipv6(ip6);
+	if (ifindex > -1)
+		return redirect(ifindex, 0);
+
 	return CTX_ACT_OK;
 }
 
@@ -424,7 +428,7 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx,
 #endif
 	void *data, *data_end;
 	struct iphdr *ip4;
-	int ret, verdict, l3_off = ETH_HLEN, l4_off;
+	int ret, verdict, l3_off = ETH_HLEN, l4_off, ifindex;
 	struct csum_offset csum_off = {};
 	struct ct_state ct_state_new = {};
 	struct ct_state ct_state = {};
@@ -723,6 +727,10 @@ pass_to_stack:
 	set_identity_mark(ctx, SECLABEL);
 
 	cilium_dbg_capture(ctx, DBG_CAPTURE_DELIVERY, 0);
+
+	ifindex = fib_lookup_ipv4(ip4);
+	if (ifindex > -1)
+		redirect(ifindex, 0);
 	return CTX_ACT_OK;
 }
 
