@@ -60,6 +60,18 @@ var (
 // for testing purposes.
 func CreateWithName(mapName string) error {
 	buildMap.Do(func() {
+		EpPolicyMap = bpf.NewMap(mapName,
+			bpf.MapTypeHashOfMaps,
+			&EndpointKey{},
+			int(unsafe.Sizeof(EndpointKey{})),
+			&EPPolicyValue{},
+			int(unsafe.Sizeof(EPPolicyValue{})),
+			MaxEntries,
+			0,
+			0,
+			bpf.ConvertKeyValue,
+		).WithCache()
+
 		mapType := bpf.MapTypeHash
 		fd, err := bpf.CreateMap(mapType,
 			uint32(unsafe.Sizeof(policymap.PolicyKey{})),
@@ -73,17 +85,6 @@ func CreateWithName(mapName string) error {
 			return
 		}
 
-		EpPolicyMap = bpf.NewMap(mapName,
-			bpf.MapTypeHashOfMaps,
-			&EndpointKey{},
-			int(unsafe.Sizeof(EndpointKey{})),
-			&EPPolicyValue{},
-			int(unsafe.Sizeof(EPPolicyValue{})),
-			MaxEntries,
-			0,
-			0,
-			bpf.ConvertKeyValue,
-		).WithCache()
 		EpPolicyMap.InnerID = uint32(fd)
 	})
 
