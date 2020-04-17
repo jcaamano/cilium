@@ -352,11 +352,14 @@ func (c *crdBackend) GetByID(ctx context.Context, id idpool.ID) (allocator.Alloc
 	return c.KeyType.PutKeyFromMap(identity.SecurityLabels), nil
 }
 
-// Release dissociates this node from using the identity bound to key. When an
-// identity has no references it may be garbage collected.
-func (c *crdBackend) Release(ctx context.Context, key allocator.AllocatorKey) (err error) {
-	identity := c.get(ctx, key)
-	if identity == nil {
+// Release dissociates this node from using the identity bound to the given ID.
+// When an identity has no references it may be garbage collected.
+func (c *crdBackend) Release(ctx context.Context, id idpool.ID, key allocator.AllocatorKey) (err error) {
+	identity, exists, err := c.getById(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !exists || identity == nil {
 		return fmt.Errorf("unable to release identity %s: identity does not exist", key)
 	}
 
@@ -364,7 +367,12 @@ func (c *crdBackend) Release(ctx context.Context, key allocator.AllocatorKey) (e
 		return fmt.Errorf("unable to release identity %s: identity is unused", key)
 	}
 
-	delete(identity.Status.Nodes, c.NodeName)
+	if identity.Status.Nodes == nil {
+		return nil
+	}
+
+	identityCopy := identity.DeepCopy()
+	delete(identityCopy.Status.Nodes, c.NodeName)
 
 	capabilities := k8sversion.Capabilities()
 
@@ -380,17 +388,12 @@ func (c *crdBackend) Release(ctx context.Context, key allocator.AllocatorKey) (e
 		if err != nil {
 			return err
 		}
-		_, err = identityOps.Patch(ctx, identity.GetName(), k8sTypes.JSONPatchType, patch, metav1.PatchOptions{}, "status")
+		_, err = identityOps.Patch(ctx, identityCopy.GetName(), k8sTypes.JSONPatchType, patch, metav1.PatchOptions{}, "status")
 		if err == nil {
 			return nil
 		}
 		log.WithError(err).Debug("Error patching status. Continuing update via UpdateStatus")
 		/* fall through and attempt UpdateStatus() or Update() */
-	}
-
-	identityCopy := identity.DeepCopy()
-	if identityCopy.Status.Nodes == nil {
-		return nil
 	}
 
 	if capabilities.UpdateStatus {
