@@ -50,7 +50,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 	Backend4Map = bpf.NewMap("cilium_lb4_backends",
 		bpf.MapTypeHash,
 		&Backend4Key{},
@@ -60,7 +60,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 	RevNat4Map = bpf.NewMap("cilium_lb4_reverse_nat",
 		bpf.MapTypeHash,
 		&RevNat4Key{},
@@ -70,7 +70,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 )
 
 // The compile-time check for whether the structs implement the interfaces
@@ -412,7 +412,7 @@ func CreateSockRevNat4Map() error {
 		0,
 		0,
 		bpf.ConvertKeyValue,
-	)
+	).WithPressureMetric()
 	_, err := sockRevNat4Map.Create()
 	return err
 }

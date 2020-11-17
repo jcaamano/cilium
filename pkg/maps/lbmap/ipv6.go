@@ -50,7 +50,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 	Backend6Map = bpf.NewMap("cilium_lb6_backends",
 		bpf.MapTypeHash,
 		&Backend6Key{},
@@ -60,7 +60,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 	// RevNat6Map represents the BPF map for reverse NAT in IPv6 load balancer
 	RevNat6Map = bpf.NewMap("cilium_lb6_reverse_nat",
 		bpf.MapTypeHash,
@@ -71,7 +71,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 )
 
 // The compile-time check for whether the structs implement the interfaces
@@ -410,7 +410,7 @@ func CreateSockRevNat6Map() error {
 		0,
 		0,
 		bpf.ConvertKeyValue,
-	)
+	).WithPressureMetric()
 	_, err := sockRevNat6Map.Create()
 	return err
 }

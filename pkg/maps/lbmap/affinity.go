@@ -40,7 +40,7 @@ var (
 		MaxEntries,
 		0, 0,
 		bpf.ConvertKeyValue,
-	).WithCache()
+	).WithCache().WithPressureMetric()
 	Affinity4Map = bpf.NewMap(
 		Affinity4MapName,
 		bpf.MapTypeLRUHash,

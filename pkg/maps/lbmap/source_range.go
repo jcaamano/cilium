@@ -146,7 +146,7 @@ var SourceRange4Map = bpf.NewMap(
 	MaxEntries,
 	bpf.BPF_F_NO_PREALLOC, 0,
 	bpf.ConvertKeyValue,
-).WithCache()
+).WithCache().WithPressureMetric()
 
 var SourceRange6Map = bpf.NewMap(
 	SourceRange6MapName,
@@ -156,7 +156,7 @@ var SourceRange6Map = bpf.NewMap(
 	MaxEntries,
 	bpf.BPF_F_NO_PREALLOC, 0,
 	bpf.ConvertKeyValue,
-).WithCache()
+).WithCache().WithPressureMetric()
 
 func srcRangeKey(cidr *cidr.CIDR, revNATID uint16, ipv6 bool) bpf.MapKey {
 	ones, _ := cidr.Mask.Size()
