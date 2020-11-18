@@ -83,6 +83,9 @@ type MapInfo struct {
 	OwnerProgType ProgType
 }
 
+type emptyCacheEntry struct {
+}
+
 type cacheEntry struct {
 	Key   MapKey
 	Value MapValue
@@ -117,7 +120,10 @@ type Map struct {
 	// DumpParser is a function for parsing keys and values from BPF maps
 	DumpParser DumpParser
 
-	cache map[string]*cacheEntry
+	// withCache is true when map cache has been enabled
+	withCache bool
+
+	cache map[string]interface{}
 
 	// errorResolverLastScheduled is the timestamp when the error resolver
 	// was last scheduled
@@ -162,6 +168,11 @@ func NewMapWithOpts(name string, mapType MapType, mapKey MapKey, keySize int,
 		},
 		name:       path.Base(name),
 		DumpParser: dumpParser,
+	}
+
+	// When BPFMapPressure metric is enabled, keep a key only cache
+	if option.Config.MetricsConfig.BPFMapPressure {
+		m.cache = map[string]interface{}{}
 	}
 	return m
 }
@@ -214,6 +225,10 @@ func (m *Map) commonName() string {
 	return m.cachedCommonName
 }
 
+func (m *Map) nonPrefixedName() string {
+	return m.name[7:]
+}
+
 // scheduleErrorResolver schedules a periodic resolver controller that scans
 // all BPF map caches for unresolved errors and attempts to resolve them. On
 // error of resolution, the controller is-rescheduled in an expedited manner
@@ -245,7 +260,10 @@ func (m *Map) scheduleErrorResolver() {
 // user space in a local cache (map) and will indicate the status of each
 // individual entry.
 func (m *Map) WithCache() *Map {
-	m.cache = map[string]*cacheEntry{}
+	if m.cache == nil {
+		m.cache = map[string]interface{}{}
+	}
+	m.withCache = true
 	m.enableSync = true
 	return m
 }
@@ -841,17 +859,21 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 			return
 		}
 
-		desiredAction := OK
-		if err != nil {
-			desiredAction = Insert
-			m.scheduleErrorResolver()
-		}
+		if m.withCache {
+			desiredAction := OK
+			if err != nil {
+				desiredAction = Insert
+				m.scheduleErrorResolver()
+			}
 
-		m.cache[key.String()] = &cacheEntry{
-			Key:           key,
-			Value:         value,
-			DesiredAction: desiredAction,
-			LastError:     err,
+			m.cache[key.String()] = &cacheEntry{
+				Key:           key,
+				Value:         value,
+				DesiredAction: desiredAction,
+				LastError:     err,
+			}
+		} else if err != nil {
+			m.cache[key.String()] = &emptyCacheEntry{}
 		}
 	}()
 
@@ -864,9 +886,9 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 		//TODO(sayboras): Remove deprecated label in 1.10
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()
 	}
-	if option.Config.MetricsConfig.BPFMapPressure && m.cache != nil {
+	if option.Config.MetricsConfig.BPFMapPressure {
 		mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-		metrics.BPFMapPressure.WithLabelValues(m.commonName()).Set(mvalue)
+		metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
 	}
 	return err
 }
@@ -885,15 +907,18 @@ func (m *Map) deleteCacheEntry(key MapKey, err error) {
 	k := key.String()
 	if err == nil {
 		delete(m.cache, k)
+	} else if !m.withCache {
+		return
 	} else {
-		entry, ok := m.cache[k]
+		v, ok := m.cache[k]
 		if !ok {
 			m.cache[k] = &cacheEntry{
 				Key: key,
 			}
-			entry = m.cache[k]
+			v = m.cache[k]
 		}
 
+		entry := v.(*cacheEntry)
 		entry.DesiredAction = Delete
 		entry.LastError = err
 		m.scheduleErrorResolver()
@@ -917,9 +942,9 @@ func (m *Map) Delete(key MapKey) error {
 		//TODO(sayboras): Remove deprecated label in 1.10
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), m.commonName(), metricOpDelete, metrics.Errno2Outcome(errno)).Inc()
 	}
-	if option.Config.MetricsConfig.BPFMapPressure && m.cache != nil {
+	if option.Config.MetricsConfig.BPFMapPressure {
 		mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-		metrics.BPFMapPressure.WithLabelValues(m.commonName()).Set(mvalue)
+		metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
 	}
 	if errno != 0 {
 		err = fmt.Errorf("unable to delete element %s from map %s: %w", key, m.name, errno)
@@ -943,10 +968,11 @@ func (m *Map) DeleteAll() error {
 
 	nextKey := make([]byte, m.KeySize)
 
-	if m.cache != nil {
+	if m.withCache {
 		// Mark all entries for deletion, upon successful deletion,
 		// entries will be removed or the LastError will be updated
-		for _, entry := range m.cache {
+		for _, v := range m.cache {
+			entry := v.(*cacheEntry)
 			entry.DesiredAction = Delete
 			entry.LastError = fmt.Errorf("deletion pending")
 		}
@@ -1022,10 +1048,12 @@ func (m *Map) GetModel() *models.BPFMap {
 		Path: m.path,
 	}
 
-	if m.cache != nil {
+	if m.withCache {
 		mapModel.Cache = make([]*models.BPFMapEntry, len(m.cache))
 		i := 0
-		for k, entry := range m.cache {
+		for k, v := range m.cache {
+			entry := v.(*cacheEntry)
+
 			model := &models.BPFMapEntry{
 				Key:           k,
 				DesiredAction: entry.DesiredAction.String(),
@@ -1070,8 +1098,9 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 	resolved := 0
 	scanned := 0
 	errors := 0
-	for k, e := range m.cache {
+	for k, v := range m.cache {
 		scanned++
+		e := v.(*cacheEntry)
 
 		switch e.DesiredAction {
 		case OK:
@@ -1080,9 +1109,9 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 			if option.Config.MetricsConfig.BPFMapOps {
 				metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()
 			}
-			if option.Config.MetricsConfig.BPFMapPressure && m.cache != nil {
+			if option.Config.MetricsConfig.BPFMapPressure {
 				mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-				metrics.BPFMapPressure.WithLabelValues(m.commonName()).Set(mvalue)
+				metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
 			}
 			if err == nil {
 				e.DesiredAction = OK
@@ -1099,9 +1128,9 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 			if option.Config.MetricsConfig.BPFMapOps {
 				metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpDelete, metrics.Error2Outcome(err)).Inc()
 			}
-			if option.Config.MetricsConfig.BPFMapPressure && m.cache != nil {
+			if option.Config.MetricsConfig.BPFMapPressure {
 				mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-				metrics.BPFMapPressure.WithLabelValues(m.commonName()).Set(mvalue)
+				metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
 			}
 			if err == 0 || err == unix.ENOENT {
 				delete(m.cache, k)
