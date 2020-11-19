@@ -596,6 +596,7 @@ func DefaultMetrics() map[string]struct{} {
 		Namespace + "_" + SubsystemKVStore + "_quorum_errors_total":                  {},
 		Namespace + "_fqdn_gc_deletions_total":                                       {},
 		Namespace + "_" + SubsystemBPF + "_map_ops_total":                            {},
+		Namespace + "_" + SubsystemBPF + "_map_pressure":                             {},
 		Namespace + "_" + SubsystemTriggers + "_policy_update_total":                 {},
 		Namespace + "_" + SubsystemTriggers + "_policy_update_folds":                 {},
 		Namespace + "_" + SubsystemTriggers + "_policy_update_call_duration_seconds": {},
