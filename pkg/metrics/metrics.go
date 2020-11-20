@@ -430,10 +430,6 @@ var (
 	// bpf map.
 	BPFMapOps = NoOpCounterVec
 
-	// BPFMapsPressure is the metric to measure the fill percentage of a bpfi
-	// map.
-	BPFMapPressure = NoOpGaugeVec
-
 	// TriggerPolicyUpdateTotal is the metric to count total number of
 	// policy update triggers
 	TriggerPolicyUpdateTotal = NoOpCounterVec
@@ -1203,14 +1199,6 @@ func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.C
 			c.BPFMapOps = true
 
 		case Namespace + "_" + SubsystemBPF + "_map_pressure":
-			BPFMapPressure = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-				Namespace: Namespace,
-				Subsystem: SubsystemBPF,
-				Name:      "map_pressure",
-				Help:      "Fill percentage of map, tagged by map name",
-			}, []string{LabelMapName})
-
-			collectors = append(collectors, BPFMapPressure)
 			c.BPFMapPressure = true
 
 		case Namespace + "_" + SubsystemTriggers + "_policy_update_total":
@@ -1358,6 +1346,19 @@ func MustRegister(c ...prometheus.Collector) {
 // Register registers a collector
 func Register(c prometheus.Collector) error {
 	return registry.Register(c)
+}
+
+// RegisterConstGauge registers a new gauge with const labels
+func RegisterConstGauge(name string, subsystem string, desc string, labels map[string]string) (Gauge, error) {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   Namespace,
+		Subsystem:   subsystem,
+		Name:        name,
+		Help:        desc,
+		ConstLabels: labels,
+	})
+	err := Register(gauge)
+	return gauge, err
 }
 
 // RegisterList registers a list of collectors. If registration of one

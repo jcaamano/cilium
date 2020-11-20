@@ -132,6 +132,13 @@ type Map struct {
 	// outstandingErrors is the number of outsanding errors syncing with
 	// the kernel
 	outstandingErrors int
+
+	// pressureMetricThreshold is the threshold over which pressure metric will be
+	// reported for this map
+	pressureMetricThreshold float64
+
+	// pressureGauge is a metric that tracks the pressure on this map
+	pressureGauge metrics.Gauge
 }
 
 type NewMapOpts struct {
@@ -170,11 +177,7 @@ func NewMapWithOpts(name string, mapType MapType, mapKey MapKey, keySize int,
 		DumpParser: dumpParser,
 	}
 
-	// When BPFMapPressure metric is enabled, keep a key only cache
-	if option.Config.MetricsConfig.BPFMapPressure {
-		m.cache = map[string]interface{}{}
-	}
-	return m
+	return m.WithPressureMetric()
 }
 
 // NewMap creates a new Map instance - object representing a BPF map
@@ -207,7 +210,7 @@ func NewPerCPUHashMap(name string, mapKey MapKey, keySize int, mapValue MapValue
 		name:       path.Base(name),
 		DumpParser: dumpParser,
 	}
-	return m
+	return m.WithPressureMetric()
 }
 
 // WithNonPersistent turns the map non-persistent and returns the map
@@ -266,6 +269,54 @@ func (m *Map) WithCache() *Map {
 	m.withCache = true
 	m.enableSync = true
 	return m
+}
+
+func (m *Map) WithPressureMetric() *Map {
+	return m.WithPressureMetricThreshold(0.0)
+}
+
+func (m *Map) WithPressureMetricThreshold(threshold float64) *Map {
+	// When pressure metric is enabled, we keep track of map keys in cache
+	if option.Config.MetricsConfig.BPFMapPressure && m.cache == nil {
+		m.cache = map[string]interface{}{}
+	}
+	m.pressureMetricThreshold = threshold
+	return m
+}
+
+func (m *Map) updatePressureMetric() {
+	if !option.Config.MetricsConfig.BPFMapPressure || m.cache == nil {
+		return
+	}
+
+	pvalue := float64(len(m.cache)) / float64(m.MaxEntries)
+
+	if pvalue <= m.pressureMetricThreshold && m.pressureGauge != nil {
+		unregistered := metrics.Unregister(m.pressureGauge)
+		if unregistered {
+			m.pressureGauge = nil
+		} else {
+			m.scopedLogger().Warning("Could not unregister pressure metric")
+		}
+	} else if pvalue > m.pressureMetricThreshold && m.pressureGauge == nil {
+		gauge, err := metrics.RegisterConstGauge(
+			"map_pressure",
+			metrics.SubsystemBPF,
+			"Fill percentage of map, tagged by map name",
+			map[string]string{
+				metrics.LabelMapName: m.nonPrefixedName(),
+			},
+		)
+		if err == nil {
+			m.pressureGauge = gauge
+		} else {
+			m.scopedLogger().Warningf("Error registering pressure metric: %v", err)
+		}
+	}
+
+	if m.pressureGauge != nil {
+		m.pressureGauge.Set(pvalue)
+	}
 }
 
 func (m *Map) GetFd() int {
@@ -854,6 +905,8 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
+	defer m.updatePressureMetric()
+
 	defer func() {
 		if m.cache == nil {
 			return
@@ -885,10 +938,6 @@ func (m *Map) Update(key MapKey, value MapValue) error {
 	if option.Config.MetricsConfig.BPFMapOps {
 		//TODO(sayboras): Remove deprecated label in 1.10
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()
-	}
-	if option.Config.MetricsConfig.BPFMapPressure {
-		mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-		metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
 	}
 	return err
 }
@@ -942,10 +991,7 @@ func (m *Map) Delete(key MapKey) error {
 		//TODO(sayboras): Remove deprecated label in 1.10
 		metrics.BPFMapOps.WithLabelValues(m.commonName(), m.commonName(), metricOpDelete, metrics.Errno2Outcome(errno)).Inc()
 	}
-	if option.Config.MetricsConfig.BPFMapPressure {
-		mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-		metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
-	}
+	m.updatePressureMetric()
 	if errno != 0 {
 		err = fmt.Errorf("unable to delete element %s from map %s: %w", key, m.name, errno)
 	}
@@ -1109,10 +1155,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 			if option.Config.MetricsConfig.BPFMapOps {
 				metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpUpdate, metrics.Error2Outcome(err)).Inc()
 			}
-			if option.Config.MetricsConfig.BPFMapPressure {
-				mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-				metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
-			}
+			m.updatePressureMetric()
 			if err == nil {
 				e.DesiredAction = OK
 				e.LastError = nil
@@ -1128,10 +1171,7 @@ func (m *Map) resolveErrors(ctx context.Context) error {
 			if option.Config.MetricsConfig.BPFMapOps {
 				metrics.BPFMapOps.WithLabelValues(m.commonName(), metricOpDelete, metrics.Error2Outcome(err)).Inc()
 			}
-			if option.Config.MetricsConfig.BPFMapPressure {
-				mvalue := float64(len(m.cache)) / float64(m.MaxEntries)
-				metrics.BPFMapPressure.WithLabelValues(m.nonPrefixedName()).Set(mvalue)
-			}
+			m.updatePressureMetric()
 			if err == 0 || err == unix.ENOENT {
 				delete(m.cache, k)
 				resolved++
