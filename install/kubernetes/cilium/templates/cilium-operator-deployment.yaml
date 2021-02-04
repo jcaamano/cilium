@@ -1,4 +1,3 @@
-{{- if .Values.operator.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,7 +11,7 @@ spec:
   # See docs on ServerCapabilities.LeasesResourceLock in file pkg/k8s/version/version.go
   # for more details.
 {{- if or (ge .Capabilities.KubeVersion.Minor "14") (gt .Capabilities.KubeVersion.Major "1") }}
-  replicas: {{ .Values.operator.replicas }}
+  replicas: 2
 {{- else }}
   replicas: 1
 {{- end }}
@@ -20,20 +19,16 @@ spec:
     matchLabels:
       io.cilium/app: operator
       name: cilium-operator
-{{- with .Values.operator.updateStrategy }}
   strategy:
-    {{- toYaml . | trim | nindent 4 }}
-{{- end }}
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
   template:
     metadata:
       annotations:
-{{- if and .Values.operator.prometheus.enabled (not .Values.operator.prometheus.serviceMonitor.enabled) }}
-        prometheus.io/port: {{ .Values.operator.prometheus.port | quote }}
+        prometheus.io/port: "6942"
         prometheus.io/scrape: "true"
-{{- end }}
-{{- with .Values.operator.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-{{- end }}
       labels:
         io.cilium/app: operator
         name: cilium-operator
@@ -41,10 +36,16 @@ spec:
 {{- if or (ge .Capabilities.KubeVersion.Minor "14") (gt .Capabilities.KubeVersion.Major "1") }}
       # In HA mode, cilium-operator pods must not be scheduled on the same
       # node as they will clash with each other.
-  {{- if .Values.operator.affinity }}
       affinity:
-  {{- toYaml .Values.operator.affinity | trim | nindent 8 }}
-  {{- end }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: io.cilium/app
+                operator: In
+                values:
+                - operator
+            topologyKey: kubernetes.io/hostname
 {{- end }}
 {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -99,14 +100,6 @@ spec:
               name: cilium-aws
               optional: true
 {{- end }}
-{{- if .Values.k8sServiceHost }}
-        - name: KUBERNETES_SERVICE_HOST
-          value: {{ .Values.k8sServiceHost | quote }}
-{{- end }}
-{{- if .Values.k8sServicePort }}
-        - name: KUBERNETES_SERVICE_PORT
-          value: {{ .Values.k8sServicePort | quote }}
-{{- end }}
 {{- if .Values.azure.subscriptionID }}
         - name: AZURE_SUBSCRIPTION_ID
           value: {{ .Values.azure.subscriptionID }}
@@ -127,10 +120,6 @@ spec:
         - name: AZURE_CLIENT_SECRET
           value: {{ .Values.azure.clientSecret }}
 {{- end }}
-{{- range $key, $value := .Values.operator.extraEnv }}
-        - name: {{ $key }}
-          value: {{ $value }}
-{{- end }}
 {{- if .Values.eni }}
         image: {{ .Values.operator.image.repository }}-aws:{{ .Values.operator.image.tag }}
 {{- else if .Values.azure.enabled }}
@@ -140,20 +129,14 @@ spec:
 {{- end }}
         imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
         name: cilium-operator
-{{- if .Values.operator.prometheus.enabled }}
         ports:
-        - containerPort: {{ .Values.operator.prometheus.port }}
-          hostPort: {{ .Values.operator.prometheus.port }}
+        - containerPort: 6942
+          hostPort: 6942
           name: prometheus
           protocol: TCP
-{{- end }}
         livenessProbe:
           httpGet:
-{{- if .Values.ipv4.enabled }}
             host: '127.0.0.1'
-{{- else }}
-            host: '::1'
-{{- end }}
             path: /healthz
             port: 9234
             scheme: HTTP
@@ -164,88 +147,17 @@ spec:
         - mountPath: /tmp/cilium/config-map
           name: cilium-config-path
           readOnly: true
-{{- if .Values.etcd.enabled }}
-        - mountPath: /var/lib/etcd-config
-          name: etcd-config-path
-          readOnly: true
-{{- if or .Values.etcd.ssl .Values.etcd.managed }}
-        - mountPath: /var/lib/etcd-secrets
-          name: etcd-secrets
-          readOnly: true
-{{- end }}
-{{- end }}
-{{- if .Values.kubeConfigPath }}
-        - mountPath: {{ .Values.kubeConfigPath }}
-          name: kube-config
-          readOnly: true
-{{- end }}
-{{- range .Values.operator.extraHostPathMounts }}
-        - mountPath: {{ .mountPath }}
-          name: {{ .name }}
-          readOnly: {{ .readOnly }}
-{{- if .mountPropagation }}
-          mountPropagation: {{ .mountPropagation }}
-{{- end }}
-{{- end }}
-{{- if .Values.operator.resources }}
-        resources:
-          {{- toYaml .Values.operator.resources | trim | nindent 10 }}
-{{- end }}
       hostNetwork: true
-{{- if .Values.etcd.managed }}
-      # In managed etcd mode, Cilium must be able to resolve the DNS name of
-      # the etcd service
-      dnsPolicy: ClusterFirstWithHostNet
-{{- end }}
       restartPolicy: Always
-{{- if and (or (and (eq .Release.Namespace "kube-system") (gt .Capabilities.KubeVersion.Minor "10")) (ge .Capabilities.KubeVersion.Minor "17") (gt .Capabilities.KubeVersion.Major "1")) .Values.enableCriticalPriorityClass }}
+{{- if (or (and (eq .Release.Namespace "kube-system") (gt .Capabilities.KubeVersion.Minor "10")) (ge .Capabilities.KubeVersion.Minor "17") (gt .Capabilities.KubeVersion.Major "1")) }}
       priorityClassName: system-cluster-critical
 {{- end }}
       serviceAccount: cilium-operator
       serviceAccountName: cilium-operator
-{{- with .Values.operator.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | trim | nindent 8 }}
-{{- end }}
-{{- with .Values.tolerations }}
       tolerations:
-      {{- toYaml . | trim | nindent 6 }}
-{{- end }}
+      - operator: Exists
       volumes:
         # To read the configuration from the config map
       - configMap:
           name: cilium-config
         name: cilium-config-path
-{{- if .Values.etcd.enabled }}
-      # To read the etcd config stored in config maps
-      - configMap:
-          defaultMode: 420
-          items:
-          - key: etcd-config
-            path: etcd.config
-          name: cilium-config
-        name: etcd-config-path
-{{- if or .Values.etcd.ssl .Values.etcd.managed }}
-        # To read the k8s etcd secrets in case the user might want to use TLS
-      - name: etcd-secrets
-        secret:
-          defaultMode: 420
-          optional: true
-          secretName: cilium-etcd-secrets
-{{- end }}
-{{- end }}
-{{- if .Values.kubeConfigPath }}
-      - hostPath:
-          path: {{ .Values.kubeConfigPath }}
-          type: FileOrCreate
-        name: kube-config
-{{- end }}
-{{- range .Values.operator.extraHostPathMounts }}
-      - name: {{ .name }}
-        hostPath:
-          path: {{ .hostPath }}
-{{- if .hostPathType }}
-          type: {{ .hostPathType }}
-{{- end }}
-{{- end }}
-{{- end }}

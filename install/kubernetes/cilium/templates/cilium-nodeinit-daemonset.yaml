@@ -13,19 +13,14 @@ spec:
   template:
     metadata:
       annotations:
-{{- with .Values.nodeinit.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-{{- end }}
       labels:
         app: cilium-node-init
     spec:
-{{- with .Values.tolerations }}
       tolerations:
-      {{- toYaml . | trim | nindent 6 }}
-{{- end }}
+      - operator: Exists
       hostPID: true
       hostNetwork: true
-{{- if and (or (and (eq .Release.Namespace "kube-system") (gt .Capabilities.KubeVersion.Minor "10")) (ge .Capabilities.KubeVersion.Minor "17") (gt .Capabilities.KubeVersion.Major "1")) .Values.enableCriticalPriorityClass }}
+{{- if (or (and (eq .Release.Namespace "kube-system") (gt .Capabilities.KubeVersion.Minor "10")) (ge .Capabilities.KubeVersion.Minor "17") (gt .Capabilities.KubeVersion.Major "1")) }}
       priorityClassName: system-node-critical
 {{- end }}
 {{- if .Values.imagePullSecrets }}
@@ -38,69 +33,6 @@ spec:
           imagePullPolicy: {{ .Values.nodeinit.image.pullPolicy }}
           securityContext:
             privileged: true
-{{- if .Values.nodeinit.revertReconfigureKubelet }}
-          lifecycle:
-            preStop:
-              exec:
-                command:
-                  - "nsenter"
-                  - "-t"
-                  - "1"
-                  - "-m"
-                  - "--"
-                  - "/bin/sh"
-                  - "-c"
-                  - |
-                    #!/bin/bash
-
-                    set -o errexit
-                    set -o pipefail
-                    set -o nounset
-
-                    if stat /tmp/node-deinit.cilium.io > /dev/null 2>&1; then
-                      exit 0
-                    fi
-
-                    echo "Waiting on pods to stop..."
-                    if [ ! -f /etc/crictl.yaml ] || grep -q 'docker' /etc/crictl.yaml; then
-                      # Works for COS, ubuntu
-                      while docker ps | grep -v "node-init" | grep -q "POD_cilium"; do sleep 1; done
-                    else
-                      # COS-beta (with containerd)
-                      while crictl ps | grep -v "node-init" | grep -q "POD_cilium"; do sleep 1; done
-                    fi
-
-                    systemctl disable sys-fs-bpf.mount || true
-                    systemctl stop sys-fs-bpf.mount || true
-
-                    if ip link show cilium_host; then
-                      echo "Deleting cilium_host interface..."
-                      ip link del cilium_host
-                    fi
-
-{{- if not (eq .Values.nodeinit.bootstrapFile "") }}
-                    rm -f {{ .Values.nodeinit.bootstrapFile }}
-{{- end }}
-
-                    rm -f /tmp/node-init.cilium.io
-                    touch /tmp/node-deinit.cilium.io
-
-{{- if .Values.nodeinit.reconfigureKubelet }}
-                    echo "Changing kubelet configuration to --network-plugin=kubenet"
-                    sed -i "s:--network-plugin=cni\ --cni-bin-dir={{ .Values.cni.binPath }}:--network-plugin=kubenet:g" /etc/default/kubelet
-                    echo "Restarting kubelet..."
-                    systemctl restart kubelet
-{{- end }}
-
-{{- if (and .Values.gke.enabled (or .Values.masquerade .Values.gke.disableDefaultSnat))}}
-                    # If the IP-MASQ chain exists, add back default jump rule from the GKE instance configure script
-                    if iptables -w -t nat -L IP-MASQ > /dev/null; then
-                      iptables -w -t nat -A POSTROUTING -m comment --comment "ip-masq: ensure nat POSTROUTING directs all non-LOCAL destination traffic to our custom IP-MASQ chain" -m addrtype ! --dst-type LOCAL -j IP-MASQ
-                    fi
-{{- end }}
-
-                    echo "Node de-initialization complete"
-{{- end }}
           env:
           - name: CHECKPOINT_PATH
             value: /tmp/node-init.cilium.io
@@ -163,66 +95,7 @@ spec:
               echo "Addressing:"
               ip -4 a
               ip -6 a
-
-{{- if .Values.nodeinit.removeCbrBridge }}
-              if ip link show cbr0; then
-                echo "Detected cbr0 bridge. Deleting interface..."
-                ip link del cbr0
-              fi
-{{- end }}
-
-{{- if .Values.nodeinit.reconfigureKubelet }}
-              # GKE: Alter the kubelet configuration to run in CNI mode
-              echo "Changing kubelet configuration to --network-plugin=cni --cni-bin-dir={{ .Values.cni.binPath }}"
-              mkdir -p {{ .Values.cni.binPath }}
-              sed -i "s:--network-plugin=kubenet:--network-plugin=cni\ --cni-bin-dir={{ .Values.cni.binPath }}:g" /etc/default/kubelet
-              echo "Restarting kubelet..."
-              systemctl restart kubelet
-{{- end }}
-
-{{- if (and .Values.gke.enabled (or .Values.masquerade .Values.gke.disableDefaultSnat))}}
-              # If Cilium is configured to manage masquerading of traffic leaving the node,
-              # we need to disable the IP-MASQ chain because even if ip-masq-agent
-              # is not installed, the node init script installs some default rules into
-              # the IP-MASQ chain.
-              # If we remove the jump to that ip-masq chain, then we ensure the ip masquerade
-              # configuration is solely managed by Cilium.
-              # Also, if Cilium is installed, it may be expected that it would be solely responsible
-              # for the networking configuration on that node. So provide the same functionality
-              # as the --disable-snat-flag for existing GKE clusters.
-              iptables -w -t nat -D POSTROUTING -m comment --comment "ip-masq: ensure nat POSTROUTING directs all non-LOCAL destination traffic to our custom IP-MASQ chain" -m addrtype ! --dst-type LOCAL -j IP-MASQ || true
-{{- end }}
-
-{{- if not (eq .Values.nodeinit.bootstrapFile "") }}
-              date > {{ .Values.nodeinit.bootstrapFile }}
-{{- end }}
-
-{{- if .Values.nodeinit.restartPods }}
-              echo "Restarting kubenet managed pods"
-              if [ ! -f /etc/crictl.yaml ] || grep -q 'docker' /etc/crictl.yaml; then
-                # Works for COS, ubuntu
-                # Note the first line is the containerID with a trailing \r
-                for f in `find /var/lib/cni/networks/ -type f ! -name lock ! -name last_reserved_ip.0`; do docker rm -f "$(sed 's/\r//;1q' $f)" || true; done
-              elif [ -n "$(docker ps --format '{{ "{{" }}.Image{{ "}}" }}' | grep ^[0-9]*\.dkr\.ecr\.[a-z]*-[a-z]*-[0-9]*\.amazonaws\.com/amazon-k8s-cni)" ]; then
-                timeout=1
-                for i in $(seq 1 7); do
-                  echo "Checking introspection API"
-                  curl localhost:61679 && retry=false || retry=true
-                  if [ $retry == false ]; then break ; fi
-                  sleep "$timeout"
-                  timeout=$(($timeout * 2))
-                done
-
-                for pod in $(curl "localhost:61679/v1/pods" 2> /dev/null | jq -r '. | keys[]'); do
-                  container_id=$(echo "$pod" | awk -F_ ' { print $3 } ' | cut -c1-12)
-                  echo "Restarting ${container_id}"
-                  docker kill "${container_id}" || true
-                done
-              else
-                # COS-beta (with containerd)
-                for f in `find /var/lib/cni/networks/ -type f ! -name lock ! -name last_reserved_ip.0`; do crictl stopp $(cat $f) || true; done
-              fi
-{{- end }}
+              date > /tmp/cilium-bootstrap-time
 
               # AKS: If azure-vnet is installed on the node, and (still) configured in bridge mode,
               # configure it as 'transparent' to be consistent with Cilium's CNI chaining config.
@@ -260,10 +133,6 @@ spec:
                 echo 'Deleting all permanent neighbour entries on azure0...'
                 ip neigh show dev azure0 nud permanent | cut -d' ' -f1 | xargs -r -n1 ip neigh del dev azure0 to || true
               fi
-{{- end }}
-
-{{- if .Values.nodeinit.revertReconfigureKubelet }}
-              rm -f /tmp/node-deinit.cilium.io
 {{- end }}
               echo "Node initialization complete"
 {{- end }}

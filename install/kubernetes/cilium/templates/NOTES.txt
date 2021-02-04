@@ -3,16 +3,8 @@
     Now make sure to check the number of READY pods is the same as the number of running cilium pods.
     Then make sure the cilium preflight deployment is also marked READY 1/1.
     If you have an issues please refer to the CNP Validation section in the upgrade guide.
-{{- else if (and (.Values.hubble.enabled) (.Values.hubble.relay.enabled)) }}
-    {{- if (.Values.hubble.ui.enabled) }}
-        You have successfully installed {{ title .Chart.Name }} with Hubble Relay and Hubble UI.
-    {{- else }}
-        You have successfully installed {{ title .Chart.Name }} with Hubble Relay.
-    {{- end }}
-{{- else if .Values.hubble.enabled }}
-    You have successfully installed {{ title .Chart.Name }} with Hubble.
 {{- else }}
-    You have successfully installed {{ title .Chart.Name }}.
+    You have successfully installed {{ title .Chart.Name }} with Hubble.
 {{- end }}
 
 Your release version is {{ .Chart.Version }}.

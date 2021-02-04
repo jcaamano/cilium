@@ -1,5 +1,4 @@
 {{- if .Values.preflight.enabled }}
-{{- if .Values.preflight.validateCNPs }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,10 +11,6 @@ spec:
       kubernetes.io/cluster-service: "true"
   template:
     metadata:
-{{- with .Values.preflight.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-{{- end }}
       labels:
         k8s-app: cilium-pre-flight-check-deployment
         kubernetes.io/cluster-service: "true"
@@ -35,7 +30,6 @@ spec:
         {{ toYaml .Values.imagePullSecrets | indent 8 }}
 {{- end }}
       containers:
-{{- if .Values.preflight.validateCNPs }}
         - name: cnp-validator
           image: {{ .Values.preflight.image.repository }}:{{ .Values.preflight.image.tag }}
           imagePullPolicy: {{ .Values.preflight.image.pullPolicy }}
@@ -57,30 +51,19 @@ spec:
               - /tmp/ready-validate-cnp
             initialDelaySeconds: 5
             periodSeconds: 5
-{{- if not ( and ( empty ( .Values.k8sServiceHost ))  ( empty ( .Values.k8sServicePort ))) }}
-          env:
-{{- if .Values.k8sServiceHost }}
-          - name: KUBERNETES_SERVICE_HOST
-            value: {{ .Values.k8sServiceHost | quote }}
-{{- end }}
-{{- if .Values.k8sServicePort }}
-          - name: KUBERNETES_SERVICE_PORT
-            value: {{ .Values.k8sServicePort | quote }}
-{{- end }}
-{{- end }}
-{{- end }}
       hostNetwork: true
       restartPolicy: Always
       serviceAccount: cilium-pre-flight
       serviceAccountName: cilium-pre-flight
       terminationGracePeriodSeconds: 1
-{{- with .Values.preflight.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | trim | nindent 8 }}
-{{- end }}
-{{- with .Values.tolerations }}
       tolerations:
-      {{- toYaml . | trim | nindent 6 }}
-{{- end }}
-{{- end }}
+      - effect: NoSchedule
+        key: node.kubernetes.io/not-ready
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+      - effect: NoSchedule
+        key: node.cloudprovider.kubernetes.io/uninitialized
+        value: "true"
+      - key: CriticalAddonsOnly
+        operator: "Exists"
 {{- end }}
